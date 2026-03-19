@@ -15,37 +15,51 @@ void Server::incomingConnection(qintptr socketDescription) {
     connect(socket, &QTcpSocket::readyRead, this, &Server::slotReadyRead);
     connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
     connect(socket, &QTcpSocket::disconnected, [this, socket]() {
-        Sockets.removeOne(socket);  // Удаляем из списка при отключении
+        Sockets.removeOne(socket);
+        expectedSizes.remove(socket);
     });
 
     Sockets.push_back(socket);
+    expectedSizes[socket] = 0;
     qDebug() << "Client connected:" << socketDescription;
 }
 
-void Server::slotReadyRead(){
+void Server::slotReadyRead() {
     auto* socket = qobject_cast<QTcpSocket*>(sender());
     if (!socket) return;
 
     QDataStream in(socket);
-    in.setVersion(QDataStream::Qt_6_2);
 
-    if (in.status() == QDataStream::Ok) {
-        qDebug() << "Reading data...";
-        QString str;
-        in >> str;
-        qDebug() << "Received:" << str;
-
-        // Эхо-ответ тому же клиенту
-        SendToClient(socket, "Server received: " + str);
-    } else {
-        qDebug() << "DataStream error:" << in.status();
+    if (expectedSizes[socket] == 0) {
+        if (socket->bytesAvailable() < static_cast<int>(sizeof(quint32))) {
+            return;
+        }
+        quint32 size = 0;
+        in >> size;
+        expectedSizes[socket] = size;
     }
+
+    if (socket->bytesAvailable() < expectedSizes[socket]) {
+        return;
+    }
+
+    // Читаем сообщение целиком
+    QByteArray data = socket->read(expectedSizes[socket]);
+    QString str = QString::fromUtf8(data);
+    expectedSizes[socket] = 0;
+
+    qDebug() << "Received:" << str;
+
+    SendToClient(socket, "Server received: " + str);
 }
 
-void Server::SendToClient(QTcpSocket* socket, const QString& str){
-    QByteArray Data;
-    QDataStream out(&Data, QIODevice::WriteOnly);
-    out.setVersion(QDataStream::Qt_6_2);
-    out << str;
-    socket->write(Data);
+void Server::SendToClient(QTcpSocket* socket, const QString& str) {
+    QByteArray payload = str.toUtf8();
+    QByteArray packet;
+
+    QDataStream out(&packet, QIODevice::WriteOnly);
+    out << static_cast<quint32>(payload.size());
+    packet.append(payload);
+
+    socket->write(packet);
 }
